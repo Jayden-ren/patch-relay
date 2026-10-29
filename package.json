@@ -4,7 +4,26 @@
   "type": "module",
   "description": "PatchRelay — the model proposes reviewed diffs with line numbers, you apply them by hand, then one click hands the work back.",
   "license": "MIT",
-  "keywords": ["dsh-plugin", "code-review", "human-in-the-loop", "diff", "patch"],
+  "author": "Jayden-ren",
+  "homepage": "https://github.com/Jayden-ren/patch-relay#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jayden-ren/patch-relay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Jayden-ren/patch-relay/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "code-review",
+    "human-in-the-loop",
+    "diff",
+    "patch"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
