@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "PatchRelay",
+    "description": "The model proposes code changes as reviewed diffs with line numbers, you apply them by hand, then hand the work back with one click."
+  }
+}

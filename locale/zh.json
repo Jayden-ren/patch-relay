@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "补丁接力 PatchRelay",
+    "description": "AI 只给精确 diff 与行号，改动由你手动落地；改完点一下把接力棒交回，AI 继续下一步。"
+  }
+}
