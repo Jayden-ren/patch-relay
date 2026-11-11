@@ -25,13 +25,13 @@ AI 读代码定位根因
 
 ## 安装
 
-DSH 插件管理里安装（本地目录或打包后的地址均可）：
+从 GitHub 安装到 profile（把 `<profile>` 换成你的 profile 名，如 `web`；Desktop 用桌面自带的 dsh 命令）：
 
-```
-install_bundle  target = <本仓库路径或包地址>
+```bash
+dsh plugin --profile <profile> add github:Jayden-ren/patch-relay
 ```
 
-安装后在 profile 内全局生效。
+也可以在 DSH 插件管理里直接从本仓库地址安装；安装后在 profile 内全局生效。
 
 ## 验证
 
