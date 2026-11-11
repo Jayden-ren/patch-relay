@@ -200,40 +200,41 @@ window.__ModuleLoader__.load({
         )
       }
 
-      function onApply() {
+      async function onApply() {
         if (busy) return
         setBusy(true)
         setStatus({ kind: 'info', text: '正在应用…' })
-        const remote = ctx && typeof ctx.get === 'function' ? ctx.get('remote') : undefined
+        const remote = ctx && ctx.remote !== undefined ? ctx.remote : ctx && typeof ctx.get === 'function' ? ctx.get('remote') : undefined
         const owner = props.sessionId || (block && typeof block === 'object' ? block.sessionId : undefined)
         const payload = {
           path: path,
           created: created,
+          ...(typeof props.cwd === 'string' && props.cwd.length > 0 ? { baseDir: props.cwd } : {}),
           hunks: groups.map((group) => ({ oldText: sideText(group, 'left'), newText: sideText(group, 'right') })),
         }
-        if (!remote || !remote.commands || typeof remote.commands.execute !== 'function') {
-          setStatus({ kind: 'error', text: '应用失败：Remote 不可用，请刷新页面或重载插件' })
+        try {
+          if (!remote || !remote.commands || typeof remote.commands.execute !== 'function') {
+            throw new Error('Remote 不可用，请刷新页面或重载插件')
+          }
+          if (!owner) throw new Error('缺少会话标识')
+          // Remote methods answer with the RemoteResult envelope: { ok: true, value } or
+          // { ok: false, error }. The value here is the command execution.
+          const answer = await remote.commands.execute(owner, '/patch-relay-apply ' + JSON.stringify(payload), [])
+          if (!answer || answer.ok !== true) {
+            const failure = answer && answer.error
+            throw new Error(failure ? String(failure.code || '') + ': ' + String(failure.message || '命令调用失败') : '命令调用失败')
+          }
+          const execution = answer.value
+          if (!execution) throw new Error('命令 patch-relay-apply 未注册（请重载插件）')
+          const result = execution.result
+          if (!result) throw new Error('命令没有返回结果')
+          if (result.kind !== 'success') throw new Error(result.text || '应用失败')
+          setStatus({ kind: 'ok', text: result.text || '已应用' })
+        } catch (error) {
+          setStatus({ kind: 'error', text: '应用失败：' + errorText(error) })
+        } finally {
           setBusy(false)
-          return
         }
-        if (!owner) {
-          setStatus({ kind: 'error', text: '应用失败：缺少会话标识' })
-          setBusy(false)
-          return
-        }
-        remote.commands.execute(owner, '/patch-relay-apply ' + JSON.stringify(payload), []).then(
-          (execution) => {
-            const result = execution && execution.result
-            if (!result) throw new Error('命令 patch-relay-apply 未注册（请重载插件）')
-            if (result.kind !== 'success') throw new Error(result.text || '应用失败')
-            setStatus({ kind: 'ok', text: result.text || '已应用' })
-            setBusy(false)
-          },
-          (error) => {
-            setStatus({ kind: 'error', text: '应用失败：' + errorText(error) })
-            setBusy(false)
-          },
-        )
       }
 
       return h('div', {
@@ -294,7 +295,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots'],
+      inject: ['slots', 'remote', 'remote.commands'],
       apply(ctx) {
         function ProposalView(props) {
           try {

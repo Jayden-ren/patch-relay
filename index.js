@@ -37,16 +37,23 @@ const TOOL_DESCRIPTION = `Propose an exact code change for the user to apply by 
 export function apply(ctx) {
   ctx.tools.register(proposePatchTool(ctx))
   // The card Apply button reaches the Host through this session command; the Client half
-  // never writes a file itself.
-  const commands = ctx.get('commands')
-  if (commands !== undefined) {
-    ctx.effect(() => commands.register({
+  // never writes a file itself. The commands service can still be initializing when this
+  // plugin activates, so fall back to the optional dependency instead of skipping it.
+  let applyCommandRegistered = false
+  const registerApplyCommand = (host) => {
+    if (applyCommandRegistered) return
+    const commands = host.get('commands')
+    if (commands === undefined) return
+    applyCommandRegistered = true
+    host.effect(() => commands.register({
       name: 'patch-relay-apply',
       description: 'Apply the diff of one propose_patch card (used by the card Apply button).',
       recordInput: false,
       handler: (invocation) => applyCardPayload(ctx, invocation),
     }))
   }
+  registerApplyCommand(ctx)
+  if (!applyCommandRegistered) ctx.inject(['commands'], (withCommands) => registerApplyCommand(withCommands))
   // A plain-context guard applies to every agent immediately, including ones created before
   // this plugin activated; the per-agent restriction below additionally removes the tools
   // from the schema the model reads.
@@ -318,7 +325,7 @@ async function applyCardPayload(ctx, invocation) {
   if (!Array.isArray(payload.hunks) || payload.hunks.length === 0) {
     return { kind: 'error', text: 'patch-relay-apply: payload.hunks is required' }
   }
-  const absolute = absolutePath(ctx, invocation, payload.path)
+  const absolute = resolveApplyPath(ctx, invocation, payload)
   try {
     if (payload.created === true) {
       const existing = await readIfExists(absolute)
@@ -343,4 +350,12 @@ async function applyCardPayload(ctx, invocation) {
   } catch (error) {
     return { kind: 'error', text: payload.path + ': ' + (error instanceof Error ? error.message : String(error)) }
   }
+}
+/** Absolute apply target: an absolute path as-is, else the card's cwd, else the session directory. */
+function resolveApplyPath(ctx, invocation, payload) {
+  if (isAbsolute(payload.path)) return payload.path
+  if (typeof payload.baseDir === 'string' && payload.baseDir.length > 0) {
+    return resolvePath(payload.baseDir, payload.path)
+  }
+  return absolutePath(ctx, invocation, payload.path)
 }
