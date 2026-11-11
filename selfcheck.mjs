@@ -4,7 +4,7 @@
  * lines reproduce its oldText, and changes farther apart than the context window stay apart.
  */
 import assert from 'node:assert/strict'
-import { buildHunks, lineAt, occurrences, sideBySide, unifiedDiff } from './diff.js'
+import { applyPatchText, buildHunks, lineAt, occurrences, sideBySide, unifiedDiff } from './diff.js'
 
 const lines = (prefix, count) => Array.from({ length: count }, (_, index) => `${prefix}${index + 1}`).join('\n')
 
@@ -121,4 +121,27 @@ for (const [before, after] of [
   assert.deepEqual(rows.filter((row) => row.kind === 'modified').map((row) => [row.leftNo, row.rightNo]), [[3, 3], [25, 25]])
 }
 
+// A landed hunk round-trips: applying the diff to its own source reproduces the proposal.
+{
+  const before = lines('l', 9)
+  const after = before.replace('l5', 'X')
+  const hunks = buildHunks('f.py', before, after).map((hunk) => ({ oldText: hunk.oldText, newText: hunk.newText }))
+  assert.deepEqual(applyPatchText(before, hunks), { ok: true, text: after })
+}
+{
+  const before = lines('l', 30)
+  const after = before.replace('l3', 'A3').replace('l25', 'B25')
+  const hunks = buildHunks('f.py', before, after).map((hunk) => ({ oldText: hunk.oldText, newText: hunk.newText }))
+  assert.deepEqual(applyPatchText(before, hunks), { ok: true, text: after })
+}
+// A file edited after the proposal refuses instead of writing the wrong content.
+{
+  const hunks = buildHunks('f.py', 'a\nb\nc', 'a\nB\nc').map((hunk) => ({ oldText: hunk.oldText, newText: hunk.newText }))
+  assert.equal(applyPatchText('a\nZ\nc', hunks).ok, false)
+}
+// Missing, ambiguous, and empty old text are refused rather than guessed.
+assert.equal(applyPatchText('a\nc', [{ oldText: 'b', newText: 'B' }]).ok, false)
+assert.equal(applyPatchText('a\nb\nb\nc', [{ oldText: 'b', newText: 'B' }]).ok, false)
+assert.deepEqual(applyPatchText('', [{ oldText: '', newText: 'new' }]), { ok: true, text: 'new' })
+assert.equal(applyPatchText('x', [{ oldText: '', newText: 'new' }]).ok, false)
 console.log('selfcheck ok')

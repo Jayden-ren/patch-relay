@@ -8,9 +8,9 @@
  *    has no shortcut left.
  *  - one prompt section stating the handoff rule.
  */
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
-import { buildHunks, lineAt, occurrences, sideBySide, unifiedDiff } from './diff.js'
+import { applyPatchText, buildHunks, lineAt, occurrences, sideBySide, unifiedDiff } from './diff.js'
 
 const TOOL_NAME = 'propose_patch'
 /** Tools whose absence forces every change through a proposal. */
@@ -20,7 +20,7 @@ const DIFF_CONTEXT = 3
 
 export const inject = ['tools', 'systemPrompt']
 
-const PROMPT = `**Patch handoff 鈥?every code change goes through \`propose_patch\`.**
+const PROMPT = `**Patch handoff — every code change goes through \`propose_patch\`.**
 The user applies each change by hand, in their own editor, so that the diff stays small and reviewed.
 
 1. Read and diagnose until you know the root cause. Never quote file content you have not read in this session.
@@ -28,6 +28,7 @@ The user applies each change by hand, in their own editor, so that the diff stay
 3. Answer with the problem and the root cause in at most two sentences, then show every change as a two-column table: 原代码 | 修改后, one row per line, three unchanged context lines around each change. In the right column mark added lines 🟩, deleted lines 🟥 (kept in place so the reader sees what went away), and lines changed in place 🟦. The table carries the code; do not paste the same lines again as prose.
 4. End the turn with one \`ask_user_question\` card: question "应用完了吗？", options "已应用，继续" and "还要再改". That click is how the user resumes you after editing by hand — do not propose the next change before it.
 5. On "已应用，继续": read the file back, run the project's own checks, say what you verified, then go on to the next change. If the question times out, stop and wait for the user instead of assuming anything.
+6. Compare the landed file with what you proposed by behavior, not character by character: comments, identifier names, whitespace, line endings and formatting are the user's own choices and never count as a mismatch. Report only a change in what the code does, or a requested behavior left unimplemented.
 Never state or imply that a change is in effect because you proposed it. Keep each proposal the smallest diff that fixes the cause: no drive-by refactors, no new abstractions, no reformatting.`
 
 const TOOL_DESCRIPTION = `Propose an exact code change for the user to apply by hand. Verifies that old_string occurs exactly once in the file, returns the real diff with line numbers, and never modifies the file. Pass content instead of old_string/new_string to propose a new file or a whole-file rewrite.`
@@ -35,6 +36,17 @@ const TOOL_DESCRIPTION = `Propose an exact code change for the user to apply by 
 /** Register everything; each call is a Cordis effect disposed with this plugin. */
 export function apply(ctx) {
   ctx.tools.register(proposePatchTool(ctx))
+  // The card Apply button reaches the Host through this session command; the Client half
+  // never writes a file itself.
+  const commands = ctx.get('commands')
+  if (commands !== undefined) {
+    ctx.effect(() => commands.register({
+      name: 'patch-relay-apply',
+      description: 'Apply the diff of one propose_patch card (used by the card Apply button).',
+      recordInput: false,
+      handler: (invocation) => applyCardPayload(ctx, invocation),
+    }))
+  }
   // A plain-context guard applies to every agent immediately, including ones created before
   // this plugin activated; the per-agent restriction below additionally removes the tools
   // from the schema the model reads.
@@ -196,7 +208,7 @@ function renderProposal(value) {
     ? `${value.added} lines, 1 hunk`
     : `${value.hunks.length} hunk${value.hunks.length === 1 ? '' : 's'}, -${value.removed} +${value.added}`
   return `<path>${value.path}</path>
-<status>${status} 鈥?the file is unchanged; the user applies it by hand</status>
+<status>${status} — the file is unchanged; the user applies it by hand</status>
 <hunk>${shape}</hunk>
 <diff>
 ${value.diff}
@@ -216,7 +228,7 @@ async function planProposal(ctx, args, exec) {
   const replaceSnippet = typeof args.old_string === 'string'
   const replaceFile = typeof args.content === 'string'
   if (replaceSnippet === replaceFile) {
-    throw new Error('pass either old_string and new_string, or content 鈥?exactly one of them')
+    throw new Error('pass either old_string and new_string, or content — exactly one of them')
   }
   const absolute = absolutePath(ctx, exec, filePath)
   const raw = await readIfExists(absolute)
@@ -284,5 +296,51 @@ async function readIfExists(absolute) {
   } catch (error) {
     if (error !== null && typeof error === 'object' && error.code === 'ENOENT') return null
     throw error
+  }
+}
+/**
+ * Apply one card payload sent by the Client half through `/patch-relay-apply`:
+ * `{ path, created, hunks: [{ oldText, newText }] }`. Hunks are located textually, so a file
+ * edited after the proposal refuses instead of being overwritten with stale content.
+ * @param ctx the plugin context, used for the session directory lookup.
+ * @param invocation the command invocation carrying the raw JSON payload.
+ */
+async function applyCardPayload(ctx, invocation) {
+  let payload
+  try {
+    payload = JSON.parse(invocation.rawInput.trim())
+  } catch (error) {
+    return { kind: 'error', text: 'patch-relay-apply: payload is not valid JSON' }
+  }
+  if (payload === null || typeof payload !== 'object' || typeof payload.path !== 'string' || payload.path.length === 0) {
+    return { kind: 'error', text: 'patch-relay-apply: payload.path is required' }
+  }
+  if (!Array.isArray(payload.hunks) || payload.hunks.length === 0) {
+    return { kind: 'error', text: 'patch-relay-apply: payload.hunks is required' }
+  }
+  const absolute = absolutePath(ctx, invocation, payload.path)
+  try {
+    if (payload.created === true) {
+      const existing = await readIfExists(absolute)
+      if (existing !== null) return { kind: 'error', text: payload.path + ' already exists; refusing to overwrite' }
+      const first = payload.hunks[0]
+      const content = normalizeEol(String(first && first.newText !== undefined ? first.newText : ''))
+      await writeFile(absolute, content, 'utf8')
+      return { kind: 'success', text: '已应用：' + payload.path }
+    }
+    const raw = await readIfExists(absolute)
+    if (raw === null) return { kind: 'error', text: payload.path + ' does not exist' }
+    const eol = raw.includes('\r\n') ? '\r\n' : '\n'
+    const hunks = payload.hunks.map((hunk) => ({
+      oldText: normalizeEol(String(hunk && hunk.oldText !== undefined ? hunk.oldText : '')),
+      newText: normalizeEol(String(hunk && hunk.newText !== undefined ? hunk.newText : '')),
+    }))
+    const applied = applyPatchText(normalizeEol(raw), hunks)
+    if (applied.ok !== true) return { kind: 'error', text: payload.path + ': ' + applied.reason }
+    const text = eol === '\r\n' ? applied.text.replace(/\n/g, '\r\n') : applied.text
+    await writeFile(absolute, text, 'utf8')
+    return { kind: 'success', text: '已应用：' + payload.path }
+  } catch (error) {
+    return { kind: 'error', text: payload.path + ': ' + (error instanceof Error ? error.message : String(error)) }
   }
 }

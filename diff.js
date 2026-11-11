@@ -239,3 +239,30 @@ export function sideBySide(hunks) {
   })
   return rows
 }
+/**
+ * Apply hunks produced by buildHunks onto LF-normalized text: each hunk's old text is located
+ * textually and must appear exactly once, so a file edited after the proposal refuses instead
+ * of writing the wrong content.
+ * @param before current file text, LF-normalized.
+ * @param hunks proposed hunks with oldText and newText.
+ * @returns the patched text, or why the hunks could not be applied.
+ */
+export function applyPatchText(before, hunks) {
+  let text = before
+  for (const hunk of hunks) {
+    const oldText = typeof hunk.oldText === 'string' ? hunk.oldText : ''
+    const newText = typeof hunk.newText === 'string' ? hunk.newText : ''
+    if (oldText.length === 0) {
+      if (text.length !== 0) return { ok: false, reason: 'proposal has no old text to locate' }
+      text = newText
+      continue
+    }
+    const at = text.indexOf(oldText)
+    if (at === -1) return { ok: false, reason: 'the proposed old text is no longer in the file' }
+    if (text.indexOf(oldText, at + 1) !== -1) {
+      return { ok: false, reason: 'the proposed old text appears more than once' }
+    }
+    text = text.slice(0, at) + newText + text.slice(at + oldText.length)
+  }
+  return { ok: true, text }
+}
